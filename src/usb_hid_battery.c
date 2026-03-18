@@ -102,14 +102,32 @@ static int hid_get_report_cb(const struct device *dev,
     if (report_type == 0x01 || report_type == 0x03) { /* Input or Feature */
         switch (report_id) {
         case BATTERY_REPORT_ID_LEFT:
-            /* Return stored value from event listener */
+            /* Try to fetch directly from ZMK API */
+            #if IS_ENABLED(CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING)
+            {
+                uint8_t level = 0;
+                int rc = zmk_split_central_get_peripheral_battery_level(0, &level);
+                if (rc == 0) {
+                    left_battery_report.level = level;
+                }
+            }
+            #endif
             *data = (uint8_t *)&left_battery_report;
             *len = sizeof(left_battery_report);
             LOG_DBG("Returning left battery: %d%%", left_battery_report.level);
             return 0;
             
         case BATTERY_REPORT_ID_RIGHT:
-            /* Return stored value from event listener */
+            /* Try to fetch directly from ZMK API */
+            #if IS_ENABLED(CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING)
+            {
+                uint8_t level = 0;
+                int rc = zmk_split_central_get_peripheral_battery_level(1, &level);
+                if (rc == 0) {
+                    right_battery_report.level = level;
+                }
+            }
+            #endif
             *data = (uint8_t *)&right_battery_report;
             *len = sizeof(right_battery_report);
             LOG_DBG("Returning right battery: %d%%", right_battery_report.level);
