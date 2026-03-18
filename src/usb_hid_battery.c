@@ -105,12 +105,18 @@ static int hid_get_report_cb(const struct device *dev,
             /* Try to fetch directly from ZMK API */
             #if IS_ENABLED(CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING)
             {
-                uint8_t level = 0;
+                uint8_t level = 42; /* Test value - if we see 42, the #if block runs */
                 int rc = zmk_split_central_get_peripheral_battery_level(0, &level);
                 if (rc == 0) {
                     left_battery_report.level = level;
+                } else {
+                    /* API call failed, set to 11 to indicate error */
+                    left_battery_report.level = 11;
                 }
             }
+            #else
+            /* Config not enabled - set to 22 to indicate this */
+            left_battery_report.level = 22;
             #endif
             *data = (uint8_t *)&left_battery_report;
             *len = sizeof(left_battery_report);
@@ -121,12 +127,16 @@ static int hid_get_report_cb(const struct device *dev,
             /* Try to fetch directly from ZMK API */
             #if IS_ENABLED(CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING)
             {
-                uint8_t level = 0;
+                uint8_t level = 42;
                 int rc = zmk_split_central_get_peripheral_battery_level(1, &level);
                 if (rc == 0) {
                     right_battery_report.level = level;
+                } else {
+                    right_battery_report.level = 11;
                 }
             }
+            #else
+            right_battery_report.level = 22;
             #endif
             *data = (uint8_t *)&right_battery_report;
             *len = sizeof(right_battery_report);
