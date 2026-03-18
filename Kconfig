@@ -1,0 +1,26 @@
+# Copyright (c) 2024 The ZMK Contributors
+# SPDX-License-Identifier: MIT
+
+config ZMK_USB_HID_BATTERY_REPORTING
+    bool "USB HID Battery Level Reporting"
+    default y
+    depends on ZMK_USB && ZMK_BATTERY_REPORTING
+    help
+      Report battery level over USB HID as a Feature Report.
+      This allows the host OS to read battery status from the keyboard.
+
+config ZMK_USB_HID_BATTERY_REPORTING_SPLIT
+    bool "Report split keyboard peripheral batteries"
+    default y
+    depends on ZMK_USB_HID_BATTERY_REPORTING && ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING
+    help
+      Include peripheral battery levels in the USB HID battery report.
+      Each half of a split keyboard will have its battery reported separately.
+
+config ZMK_USB_HID_BATTERY_REPORT_INTERVAL
+    int "Battery report interval (seconds)"
+    default 60
+    depends on ZMK_USB_HID_BATTERY_REPORTING
+    help
+      How often to send battery level updates over USB HID.
+      Set to 0 to only send on battery state changes.
