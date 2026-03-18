@@ -4,10 +4,12 @@
 config ZMK_USB_HID_BATTERY_REPORTING
     bool "USB HID Battery Level Reporting"
     default y
-    depends on ZMK_USB && ZMK_BATTERY_REPORTING
+    depends on ZMK_USB
     help
       Report battery level over USB HID as a Feature Report.
       This allows the host OS to read battery status from the keyboard.
+      For dongles without a local battery, enable ZMK_USB_HID_BATTERY_REPORTING_SPLIT
+      to report peripheral battery levels.
 
 config ZMK_USB_HID_BATTERY_REPORTING_SPLIT
     bool "Report split keyboard peripheral batteries"
@@ -16,11 +18,6 @@ config ZMK_USB_HID_BATTERY_REPORTING_SPLIT
     help
       Include peripheral battery levels in the USB HID battery report.
       Each half of a split keyboard will have its battery reported separately.
+      This is required for dongles that have no local battery.
 
-config ZMK_USB_HID_BATTERY_REPORT_INTERVAL
-    int "Battery report interval (seconds)"
-    default 60
-    depends on ZMK_USB_HID_BATTERY_REPORTING
-    help
-      How often to send battery level updates over USB HID.
-      Set to 0 to only send on battery state changes.
+
