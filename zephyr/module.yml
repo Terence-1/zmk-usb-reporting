@@ -1,6 +1,4 @@
 name: zmk-usb-reporting
 build:
-  depends:
-    - zmk
   cmake: .
   kconfig: Kconfig
