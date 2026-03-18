@@ -140,7 +140,7 @@ static void send_battery_report(struct battery_report *report) {
         return;
     }
     
-    if (zmk_usb_get_status() != ZMK_USB_STATUS_POWERED) {
+    if (zmk_usb_get_status() != ZMK_USB_CONN_POWERED) {
         return;
     }
     
