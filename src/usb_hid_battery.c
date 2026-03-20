@@ -1,15 +1,6 @@
 /*
  * Copyright (c) 2024 The ZMK Contributors
  * SPDX-License-Identifier: MIT
- *
- * USB HID Battery Reporting for Split Keyboards
- * 
- * This module exposes keyboard battery levels using the standard HID Battery System
- * usage page (0x85), which is recognized natively by Windows, macOS, and Linux.
- * 
- * For split keyboards with two halves, we create two HID interfaces:
- * - HID_1: Left half battery
- * - HID_2: Right half battery (requires CONFIG_USB_HID_DEVICE_COUNT >= 3)
  */
 
 #include <zephyr/kernel.h>
@@ -30,160 +21,130 @@
 
 LOG_MODULE_REGISTER(usb_hid_battery, CONFIG_ZMK_LOG_LEVEL);
 
-/*
- * HID Report Descriptor using Battery System usage page (0x85)
- * This format is recognized natively by operating systems.
- *
- * Usage Page 0x85 = Battery System
- * Usage 0x44 = Charging
- * Usage 0x45 = Discharging  
- * Usage 0x65 = AbsoluteStateOfCharge (percentage 0-100)
- * Usage 0x66 = RemainingCapacity
+/* HID Report IDs */
+#define BATTERY_REPORT_ID_LEFT   0x05
+#define BATTERY_REPORT_ID_RIGHT  0x06
+
+/* HID Report Descriptor for Battery
+ * Uses Generic Device Controls (0x06) with Battery Strength (0x20)
+ * This works reliably for custom applications reading via HID
  */
 static const uint8_t battery_hid_report_desc[] = {
-    0x05, 0x84,       /* Usage Page (Power Device) */
-    0x09, 0x04,       /* Usage (UPS) - required container for battery */
+    /* Left Half Battery Report */
+    0x05, 0x01,       /* Usage Page (Generic Desktop) */
+    0x09, 0x06,       /* Usage (Keyboard) */
     0xA1, 0x01,       /* Collection (Application) */
+    0x85, BATTERY_REPORT_ID_LEFT,  /* Report ID */
     
-    /* Battery System */
-    0x05, 0x85,       /*   Usage Page (Battery System) */
-    0x09, 0x10,       /*   Usage (Battery System) */
-    0xA1, 0x02,       /*   Collection (Logical) */
+    /* Battery Strength */
+    0x05, 0x06,       /* Usage Page (Generic Device Controls) */
+    0x09, 0x20,       /* Usage (Battery Strength) */
+    0x15, 0x00,       /* Logical Minimum (0) */
+    0x26, 0x64, 0x00, /* Logical Maximum (100) */
+    0x75, 0x08,       /* Report Size (8 bits) */
+    0x95, 0x01,       /* Report Count (1) */
+    0x81, 0x02,       /* Input (Data, Variable, Absolute) */
+    0xC0,             /* End Collection */
+
+    /* Right Half Battery Report */
+    0x05, 0x01,       /* Usage Page (Generic Desktop) */
+    0x09, 0x06,       /* Usage (Keyboard) */
+    0xA1, 0x01,       /* Collection (Application) */
+    0x85, BATTERY_REPORT_ID_RIGHT,  /* Report ID */
     
-    /* State of Charge - this is what the OS displays */
-    0x09, 0x65,       /*     Usage (AbsoluteStateOfCharge) */
-    0x15, 0x00,       /*     Logical Minimum (0) */
-    0x26, 0x64, 0x00, /*     Logical Maximum (100) */
-    0x75, 0x08,       /*     Report Size (8 bits) */
-    0x95, 0x01,       /*     Report Count (1) */
-    0x81, 0x02,       /*     Input (Data, Variable, Absolute) */
-    
-    /* Charging status */
-    0x09, 0x44,       /*     Usage (Charging) */
-    0x15, 0x00,       /*     Logical Minimum (0) */
-    0x25, 0x01,       /*     Logical Maximum (1) */
-    0x75, 0x01,       /*     Report Size (1 bit) */
-    0x95, 0x01,       /*     Report Count (1) */
-    0x81, 0x02,       /*     Input (Data, Variable, Absolute) */
-    
-    /* Discharging status */
-    0x09, 0x45,       /*     Usage (Discharging) */
-    0x15, 0x00,       /*     Logical Minimum (0) */
-    0x25, 0x01,       /*     Logical Maximum (1) */
-    0x75, 0x01,       /*     Report Size (1 bit) */
-    0x95, 0x01,       /*     Report Count (1) */
-    0x81, 0x02,       /*     Input (Data, Variable, Absolute) */
-    
-    /* Padding to byte boundary */
-    0x75, 0x06,       /*     Report Size (6 bits) */
-    0x95, 0x01,       /*     Report Count (1) */
-    0x81, 0x03,       /*     Input (Constant) - padding */
-    
-    0xC0,             /*   End Collection (Logical) */
-    0xC0,             /* End Collection (Application) */
+    /* Battery Strength */
+    0x05, 0x06,       /* Usage Page (Generic Device Controls) */
+    0x09, 0x20,       /* Usage (Battery Strength) */
+    0x15, 0x00,       /* Logical Minimum (0) */
+    0x26, 0x64, 0x00, /* Logical Maximum (100) */
+    0x75, 0x08,       /* Report Size (8 bits) */
+    0x95, 0x01,       /* Report Count (1) */
+    0x81, 0x02,       /* Input (Data, Variable, Absolute) */
+    0xC0,             /* End Collection */
 };
 
-/* Battery report structure - matches HID descriptor */
+/* Battery report structure */
 struct battery_report {
-    uint8_t state_of_charge;  /* 0-100% */
-    uint8_t status;           /* bit 0 = charging, bit 1 = discharging */
+    uint8_t report_id;
+    uint8_t level;
 } __packed;
 
 /* Store battery levels for both halves */
-static struct battery_report left_battery = {
-    .state_of_charge = 0,
-    .status = 0x02  /* discharging by default */
+static struct battery_report left_battery_report = {
+    .report_id = BATTERY_REPORT_ID_LEFT,
+    .level = 0
 };
 
-static struct battery_report right_battery = {
-    .state_of_charge = 0,
-    .status = 0x02  /* discharging by default */
+static struct battery_report right_battery_report = {
+    .report_id = BATTERY_REPORT_ID_RIGHT,
+    .level = 0
 };
 
-static const struct device *hid_dev_left;
-static const struct device *hid_dev_right;
-static bool hid_ready_left = false;
-static bool hid_ready_right = false;
+static const struct device *hid_dev;
+static bool usb_hid_battery_ready = false;
 
 /* Forward declarations */
-static void send_battery_report(const struct device *dev, struct battery_report *report);
+static void send_battery_report(struct battery_report *report);
 
-/* HID callbacks for left battery */
-static void hid_int_ready_left_cb(const struct device *dev) {
+/* HID callbacks */
+static void hid_int_ready_cb(const struct device *dev) {
     ARG_UNUSED(dev);
 }
 
-static int hid_get_report_left_cb(const struct device *dev, 
-                                   struct usb_setup_packet *setup,
-                                   int32_t *len, uint8_t **data) {
+static int hid_get_report_cb(const struct device *dev, 
+                              struct usb_setup_packet *setup,
+                              int32_t *len, uint8_t **data) {
+    uint8_t report_id = setup->wValue & 0xFF;
     uint8_t report_type = (setup->wValue >> 8) & 0xFF;
     
-    LOG_DBG("Get left battery report: type=%d", report_type);
+    LOG_DBG("Get report: type=%d, id=%d", report_type, report_id);
     
-    /* Handle Input report requests */
-    if (report_type == 0x01) {
-        #if IS_ENABLED(CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING)
-        {
-            uint8_t level = 0;
-            int rc = zmk_split_central_get_peripheral_battery_level(0, &level);
-            if (rc == 0) {
-                left_battery.state_of_charge = level;
+    /* Handle Feature or Input report requests */
+    if (report_type == 0x01 || report_type == 0x03) { /* Input or Feature */
+        switch (report_id) {
+        case BATTERY_REPORT_ID_LEFT:
+            #if IS_ENABLED(CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING)
+            {
+                uint8_t level = 0;
+                int rc = zmk_split_central_get_peripheral_battery_level(0, &level);
+                if (rc == 0) {
+                    left_battery_report.level = level;
+                }
             }
+            #endif
+            *data = (uint8_t *)&left_battery_report;
+            *len = sizeof(left_battery_report);
+            LOG_DBG("Returning left battery: %d%%", left_battery_report.level);
+            return 0;
+            
+        case BATTERY_REPORT_ID_RIGHT:
+            #if IS_ENABLED(CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING)
+            {
+                uint8_t level = 0;
+                int rc = zmk_split_central_get_peripheral_battery_level(1, &level);
+                if (rc == 0) {
+                    right_battery_report.level = level;
+                }
+            }
+            #endif
+            *data = (uint8_t *)&right_battery_report;
+            *len = sizeof(right_battery_report);
+            LOG_DBG("Returning right battery: %d%%", right_battery_report.level);
+            return 0;
         }
-        #endif
-        *data = (uint8_t *)&left_battery;
-        *len = sizeof(left_battery);
-        LOG_DBG("Returning left battery: %d%%", left_battery.state_of_charge);
-        return 0;
     }
     
     return -ENOTSUP;
 }
 
-static const struct hid_ops hid_ops_left = {
-    .int_in_ready = hid_int_ready_left_cb,
-    .get_report = hid_get_report_left_cb,
-};
-
-/* HID callbacks for right battery */
-static void hid_int_ready_right_cb(const struct device *dev) {
-    ARG_UNUSED(dev);
-}
-
-static int hid_get_report_right_cb(const struct device *dev, 
-                                    struct usb_setup_packet *setup,
-                                    int32_t *len, uint8_t **data) {
-    uint8_t report_type = (setup->wValue >> 8) & 0xFF;
-    
-    LOG_DBG("Get right battery report: type=%d", report_type);
-    
-    if (report_type == 0x01) {
-        #if IS_ENABLED(CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING)
-        {
-            uint8_t level = 0;
-            int rc = zmk_split_central_get_peripheral_battery_level(1, &level);
-            if (rc == 0) {
-                right_battery.state_of_charge = level;
-            }
-        }
-        #endif
-        *data = (uint8_t *)&right_battery;
-        *len = sizeof(right_battery);
-        LOG_DBG("Returning right battery: %d%%", right_battery.state_of_charge);
-        return 0;
-    }
-    
-    return -ENOTSUP;
-}
-
-static const struct hid_ops hid_ops_right = {
-    .int_in_ready = hid_int_ready_right_cb,
-    .get_report = hid_get_report_right_cb,
+static const struct hid_ops hid_ops = {
+    .int_in_ready = hid_int_ready_cb,
+    .get_report = hid_get_report_cb,
 };
 
 /* Send battery report over USB interrupt endpoint */
-static void send_battery_report(const struct device *dev, struct battery_report *report) {
-    if (dev == NULL) {
+static void send_battery_report(struct battery_report *report) {
+    if (!usb_hid_battery_ready || !hid_dev) {
         return;
     }
     
@@ -193,12 +154,11 @@ static void send_battery_report(const struct device *dev, struct battery_report 
         return;
     }
     
-    int ret = hid_int_ep_write(dev, (uint8_t *)report, sizeof(*report), NULL);
+    int ret = hid_int_ep_write(hid_dev, (uint8_t *)report, sizeof(*report), NULL);
     if (ret < 0) {
         LOG_WRN("Failed to send battery report: %d", ret);
     } else {
-        LOG_DBG("Sent battery report: soc=%d%%, status=0x%02X", 
-                report->state_of_charge, report->status);
+        LOG_DBG("Sent battery report: id=%d, level=%d", report->report_id, report->level);
     }
 }
 
@@ -214,15 +174,11 @@ static int peripheral_battery_listener(const zmk_event_t *eh) {
     LOG_INF("Peripheral %d battery changed: %d%%", ev->source, ev->state_of_charge);
     
     if (ev->source == 0) {
-        left_battery.state_of_charge = ev->state_of_charge;
-        if (hid_ready_left) {
-            send_battery_report(hid_dev_left, &left_battery);
-        }
+        left_battery_report.level = ev->state_of_charge;
+        send_battery_report(&left_battery_report);
     } else if (ev->source == 1) {
-        right_battery.state_of_charge = ev->state_of_charge;
-        if (hid_ready_right) {
-            send_battery_report(hid_dev_right, &right_battery);
-        }
+        right_battery_report.level = ev->state_of_charge;
+        send_battery_report(&right_battery_report);
     }
     
     return ZMK_EV_EVENT_BUBBLE;
@@ -236,45 +192,24 @@ ZMK_SUBSCRIPTION(usb_hid_battery_peripheral, zmk_peripheral_battery_state_change
 static int usb_hid_battery_init(void) {
     int ret;
     
-    /* Initialize left battery HID device (HID_1) */
-    hid_dev_left = device_get_binding("HID_1");
-    if (hid_dev_left == NULL) {
-        LOG_ERR("Failed to get HID_1 device for left battery");
+    hid_dev = device_get_binding("HID_1");
+    if (hid_dev == NULL) {
+        LOG_ERR("Failed to get HID device binding for battery");
         return -ENODEV;
     }
     
-    usb_hid_register_device(hid_dev_left,
+    usb_hid_register_device(hid_dev,
                             battery_hid_report_desc,
                             sizeof(battery_hid_report_desc),
-                            &hid_ops_left);
+                            &hid_ops);
     
-    ret = usb_hid_init(hid_dev_left);
+    ret = usb_hid_init(hid_dev);
     if (ret != 0) {
-        LOG_ERR("Failed to initialize left battery HID: %d", ret);
+        LOG_ERR("Failed to initialize battery HID device: %d", ret);
         return ret;
     }
-    hid_ready_left = true;
-    LOG_INF("Left battery HID initialized (HID_1)");
     
-    /* Initialize right battery HID device (HID_2) */
-    hid_dev_right = device_get_binding("HID_2");
-    if (hid_dev_right == NULL) {
-        LOG_WRN("HID_2 not available - right battery won't have native OS support");
-        LOG_WRN("Increase CONFIG_USB_HID_DEVICE_COUNT to 3 for dual battery support");
-    } else {
-        usb_hid_register_device(hid_dev_right,
-                                battery_hid_report_desc,
-                                sizeof(battery_hid_report_desc),
-                                &hid_ops_right);
-        
-        ret = usb_hid_init(hid_dev_right);
-        if (ret != 0) {
-            LOG_ERR("Failed to initialize right battery HID: %d", ret);
-        } else {
-            hid_ready_right = true;
-            LOG_INF("Right battery HID initialized (HID_2)");
-        }
-    }
+    usb_hid_battery_ready = true;
     
     LOG_INF("USB HID Battery reporting initialized for split keyboard");
     
