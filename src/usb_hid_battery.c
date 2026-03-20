@@ -24,9 +24,11 @@ LOG_MODULE_REGISTER(usb_hid_battery, CONFIG_ZMK_LOG_LEVEL);
 /* HID Report IDs - use high IDs to avoid conflicts with ZMK's existing reports */
 #define BATTERY_REPORT_ID_LEFT   0x05
 #define BATTERY_REPORT_ID_RIGHT  0x06
+#define BATTERY_REPORT_ID_DIAG   0x07  /* Diagnostic report */
 
 /* HID Report Descriptor for Battery System
  * Reports two batteries: left half and right half
+ * Plus a diagnostic report
  */
 static const uint8_t battery_hid_report_desc[] = {
     /* Left Half Battery Report */
@@ -60,12 +62,41 @@ static const uint8_t battery_hid_report_desc[] = {
     0x95, 0x01,       /* Report Count (1) */
     0x81, 0x02,       /* Input (Data, Variable, Absolute) */
     0xC0,             /* End Collection */
+
+    /* Diagnostic Report - 4 bytes of status info */
+    0x05, 0x01,       /* Usage Page (Generic Desktop) */
+    0x09, 0x06,       /* Usage (Keyboard) */
+    0xA1, 0x01,       /* Collection (Application) */
+    0x85, BATTERY_REPORT_ID_DIAG,  /* Report ID */
+    0x05, 0x06,       /* Usage Page (Generic Device Controls) */
+    0x09, 0x20,       /* Usage (Battery Strength) - reuse for simplicity */
+    0x15, 0x00,       /* Logical Minimum (0) */
+    0x26, 0xFF, 0x00, /* Logical Maximum (255) */
+    0x75, 0x08,       /* Report Size (8 bits) */
+    0x95, 0x04,       /* Report Count (4) - 4 bytes */
+    0x81, 0x02,       /* Input (Data, Variable, Absolute) */
+    0xC0,             /* End Collection */
 };
 
 /* Battery report structures */
 struct battery_report {
     uint8_t report_id;
     uint8_t level;
+} __packed;
+
+/* Diagnostic report structure
+ * Byte 0: flags (bit 0 = left event received, bit 1 = right event received, 
+ *                bit 2 = fetching enabled, bit 3-7 = reserved)
+ * Byte 1: left battery event count (saturates at 255)
+ * Byte 2: right battery event count (saturates at 255)
+ * Byte 3: last API error code (0 = success)
+ */
+struct diag_report {
+    uint8_t report_id;
+    uint8_t flags;
+    uint8_t left_event_count;
+    uint8_t right_event_count;
+    uint8_t last_api_error;
 } __packed;
 
 /* Store battery levels for both halves */
@@ -77,6 +108,15 @@ static struct battery_report left_battery_report = {
 static struct battery_report right_battery_report = {
     .report_id = BATTERY_REPORT_ID_RIGHT,
     .level = 0
+};
+
+/* Diagnostic data */
+static struct diag_report diag_report = {
+    .report_id = BATTERY_REPORT_ID_DIAG,
+    .flags = 0,
+    .left_event_count = 0,
+    .right_event_count = 0,
+    .last_api_error = 0xFF  /* 0xFF = not yet called */
 };
 
 static const struct device *hid_dev;
@@ -105,18 +145,13 @@ static int hid_get_report_cb(const struct device *dev,
             /* Try to fetch directly from ZMK API */
             #if IS_ENABLED(CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING)
             {
-                uint8_t level = 42; /* Test value - if we see 42, the #if block runs */
+                uint8_t level = 0;
                 int rc = zmk_split_central_get_peripheral_battery_level(0, &level);
+                diag_report.last_api_error = (rc < 0) ? (-rc) : rc;
                 if (rc == 0) {
                     left_battery_report.level = level;
-                } else {
-                    /* API call failed, set to 11 to indicate error */
-                    left_battery_report.level = 11;
                 }
             }
-            #else
-            /* Config not enabled - set to 22 to indicate this */
-            left_battery_report.level = 22;
             #endif
             *data = (uint8_t *)&left_battery_report;
             *len = sizeof(left_battery_report);
@@ -127,20 +162,29 @@ static int hid_get_report_cb(const struct device *dev,
             /* Try to fetch directly from ZMK API */
             #if IS_ENABLED(CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING)
             {
-                uint8_t level = 42;
+                uint8_t level = 0;
                 int rc = zmk_split_central_get_peripheral_battery_level(1, &level);
+                diag_report.last_api_error = (rc < 0) ? (-rc) : rc;
                 if (rc == 0) {
                     right_battery_report.level = level;
-                } else {
-                    right_battery_report.level = 11;
                 }
             }
-            #else
-            right_battery_report.level = 22;
             #endif
             *data = (uint8_t *)&right_battery_report;
             *len = sizeof(right_battery_report);
             LOG_DBG("Returning right battery: %d%%", right_battery_report.level);
+            return 0;
+            
+        case BATTERY_REPORT_ID_DIAG:
+            /* Update flags before returning */
+            #if IS_ENABLED(CONFIG_ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING)
+            diag_report.flags |= 0x04;  /* Bit 2: fetching enabled */
+            #endif
+            *data = (uint8_t *)&diag_report;
+            *len = sizeof(diag_report);
+            LOG_DBG("Returning diag: flags=0x%02X, left_cnt=%d, right_cnt=%d, err=%d",
+                    diag_report.flags, diag_report.left_event_count,
+                    diag_report.right_event_count, diag_report.last_api_error);
             return 0;
         }
     }
@@ -188,9 +232,19 @@ static int peripheral_battery_listener(const zmk_event_t *eh) {
     if (ev->source == 0) {
         left_battery_report.level = ev->state_of_charge;
         send_battery_report(&left_battery_report);
+        /* Update diagnostic counters */
+        diag_report.flags |= 0x01;  /* Bit 0: left event received */
+        if (diag_report.left_event_count < 255) {
+            diag_report.left_event_count++;
+        }
     } else if (ev->source == 1) {
         right_battery_report.level = ev->state_of_charge;
         send_battery_report(&right_battery_report);
+        /* Update diagnostic counters */
+        diag_report.flags |= 0x02;  /* Bit 1: right event received */
+        if (diag_report.right_event_count < 255) {
+            diag_report.right_event_count++;
+        }
     }
     
     return ZMK_EV_EVENT_BUBBLE;
