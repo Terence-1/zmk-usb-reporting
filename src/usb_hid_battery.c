@@ -26,41 +26,54 @@ LOG_MODULE_REGISTER(usb_hid_battery, CONFIG_ZMK_LOG_LEVEL);
 #define BATTERY_REPORT_ID_RIGHT  0x06
 
 /* HID Report Descriptor for Battery
- * Uses Generic Device Controls (0x06) with Battery Strength (0x20)
- * This works reliably for custom applications reading via HID
+ * Uses Power Page (0x84) which is the standard for battery reporting
+ * that operating systems recognize natively.
+ * 
+ * We create two Battery System collections, one for each keyboard half,
+ * using Feature reports so the OS can poll for battery status.
  */
 static const uint8_t battery_hid_report_desc[] = {
-    /* Left Half Battery Report */
-    0x05, 0x01,       /* Usage Page (Generic Desktop) */
-    0x09, 0x06,       /* Usage (Keyboard) */
+    /* Left Half Battery Report - Power Page */
+    0x05, 0x84,       /* Usage Page (Power Device) */
+    0x09, 0x04,       /* Usage (UPS) - generic power device */
     0xA1, 0x01,       /* Collection (Application) */
     0x85, BATTERY_REPORT_ID_LEFT,  /* Report ID */
     
-    /* Battery Strength */
-    0x05, 0x06,       /* Usage Page (Generic Device Controls) */
-    0x09, 0x20,       /* Usage (Battery Strength) */
+    0x09, 0x10,       /* Usage (Battery System) */
+    0xA1, 0x02,       /* Collection (Logical) */
+    
+    /* Remaining Capacity - percentage */
+    0x09, 0x66,       /* Usage (RemainingCapacity) */
     0x15, 0x00,       /* Logical Minimum (0) */
     0x26, 0x64, 0x00, /* Logical Maximum (100) */
+    0x67, 0x01, 0x00, 0x10, 0x00, /* Unit (Percent) */
     0x75, 0x08,       /* Report Size (8 bits) */
     0x95, 0x01,       /* Report Count (1) */
-    0x81, 0x02,       /* Input (Data, Variable, Absolute) */
-    0xC0,             /* End Collection */
+    0xB1, 0x02,       /* Feature (Data, Variable, Absolute) */
+    
+    0xC0,             /* End Collection (Logical) */
+    0xC0,             /* End Collection (Application) */
 
-    /* Right Half Battery Report */
-    0x05, 0x01,       /* Usage Page (Generic Desktop) */
-    0x09, 0x06,       /* Usage (Keyboard) */
+    /* Right Half Battery Report - Power Page */
+    0x05, 0x84,       /* Usage Page (Power Device) */
+    0x09, 0x04,       /* Usage (UPS) */
     0xA1, 0x01,       /* Collection (Application) */
     0x85, BATTERY_REPORT_ID_RIGHT,  /* Report ID */
     
-    /* Battery Strength */
-    0x05, 0x06,       /* Usage Page (Generic Device Controls) */
-    0x09, 0x20,       /* Usage (Battery Strength) */
+    0x09, 0x10,       /* Usage (Battery System) */
+    0xA1, 0x02,       /* Collection (Logical) */
+    
+    /* Remaining Capacity - percentage */
+    0x09, 0x66,       /* Usage (RemainingCapacity) */
     0x15, 0x00,       /* Logical Minimum (0) */
     0x26, 0x64, 0x00, /* Logical Maximum (100) */
+    0x67, 0x01, 0x00, 0x10, 0x00, /* Unit (Percent) */
     0x75, 0x08,       /* Report Size (8 bits) */
     0x95, 0x01,       /* Report Count (1) */
-    0x81, 0x02,       /* Input (Data, Variable, Absolute) */
-    0xC0,             /* End Collection */
+    0xB1, 0x02,       /* Feature (Data, Variable, Absolute) */
+    
+    0xC0,             /* End Collection (Logical) */
+    0xC0,             /* End Collection (Application) */
 };
 
 /* Battery report structure */
